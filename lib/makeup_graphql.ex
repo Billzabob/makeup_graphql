@@ -5,6 +5,7 @@ defmodule MakeupGraphql do
 
   import Makeup.Lexer.Combinators
   import Makeup.Lexer.Groups
+  import MakeupGraphql.Helpers
   import NimbleParsec
 
   @behaviour Makeup.Lexer
@@ -46,68 +47,18 @@ defmodule MakeupGraphql do
     ]
   )
 
-  # Codepoints
-  @horizontal_tab 0x0009
-  @newline 0x000A
-  @carriage_return 0x000D
-  @space 0x0020
-  @unicode_bom 0xFEFF
-
-  any_unicode = utf8_char([])
-
-  unicode_bom = ignore(utf8_char([@unicode_bom]))
-
-  whitespace =
-    ascii_string(
-      [
-        @horizontal_tab,
-        @space
-      ],
-      min: 1
-    )
-    |> token(:whitespace)
-
-  line_terminator =
-    choice([
-      ascii_char([@newline]),
-      ascii_char([@carriage_return])
-      |> optional(ascii_char([@newline]))
-    ])
-    |> token(:whitespace)
-
-  comment =
-    string("#")
-    |> repeat_while(any_unicode, {:not_line_terminator, []})
-    |> token(:comment_single)
-
-  comma = ascii_char([?,]) |> token(:punctuation)
-
-  ampersand = ascii_char([?&]) |> token(:punctuation)
-
-  punctuator =
-    choice([
-      ascii_char([
-        ?!,
-        ?$,
-        ?(,
-        ?),
-        ?:,
-        ?=,
-        ?@,
-        ?[,
-        ?],
-        ?{,
-        ?|,
-        ?}
-      ]),
-      times(ascii_char([?.]), 3)
-    ])
-    |> token(:punctuation)
-
-  boolean_value_or_name_or_reserved_word =
-    ascii_char([?_, ?A..?Z, ?a..?z])
-    |> repeat(ascii_char([?_, ?0..?9, ?A..?Z, ?a..?z]))
-    |> post_traverse({:boolean_value_or_name_or_reserved_word, []})
+  exclamation = ascii_char([?!]) |> ignore_whitespace(:punctuation)
+  dollar = ascii_char([?$]) |> ignore_whitespace(:punctuation)
+  open_paren = ascii_char([?(]) |> ignore_whitespace(:punctuation)
+  close_paren = ascii_char([?)]) |> ignore_whitespace(:punctuation)
+  colon = ascii_char([?:]) |> ignore_whitespace(:punctuation)
+  _equals = ascii_char([?=]) |> ignore_whitespace(:punctuation)
+  at = ascii_char([?@]) |> ignore_whitespace(:punctuation)
+  open_square = ascii_char([?[]) |> ignore_whitespace(:punctuation)
+  close_square = ascii_char([?]]) |> ignore_whitespace(:punctuation)
+  open_bracket = ascii_char([?{]) |> ignore_whitespace(:punctuation)
+  close_bracket = ascii_char([?}]) |> ignore_whitespace(:punctuation)
+  _pipe = ascii_char([?|]) |> ignore_whitespace(:punctuation)
 
   negative_sign = ascii_char([?-])
 
@@ -122,10 +73,7 @@ defmodule MakeupGraphql do
       non_zero_digit |> repeat(digit)
     ])
 
-  int_value =
-    empty()
-    |> concat(integer_part)
-    |> token(:number_integer)
+  int_value = ignore_whitespace(integer_part, :number_integer)
 
   fractional_part =
     ascii_char([?.])
@@ -143,10 +91,10 @@ defmodule MakeupGraphql do
   float_value =
     choice([
       integer_part |> concat(fractional_part) |> concat(exponent_part),
-      integer_part |> post_traverse({:fill_mantissa, []}) |> concat(exponent_part),
+      integer_part |> post_traverse(:fill_mantissa) |> concat(exponent_part),
       integer_part |> concat(fractional_part)
     ])
-    |> token(:number_float)
+    |> ignore_whitespace(:number_float)
 
   unicode_char_in_string =
     string("\\u")
@@ -163,94 +111,174 @@ defmodule MakeupGraphql do
     escaped_char
   ]
 
-  string_value = string_like("\"", "\"", combinators_inside_string, :string)
-
+  single_string_value = string_like("\"", "\"", combinators_inside_string, :string)
   block_string_value = string_like(~S["""], ~S["""], combinators_inside_string, :string)
 
-  root_element_combinator =
+  string_value = choice([single_string_value, block_string_value]) |> ignore_whitespace()
+
+  operation_type = choice([keyword("query"), keyword("mutation"), keyword("subscription")])
+  boolean_value = choice([constant("true"), constant("false")])
+
+  alias_ = name() |> ascii_char([?:])
+
+  variable = dollar |> concat(symbol())
+
+  null_value = constant("null")
+
+  enum_value = lookahead_not(choice([boolean_value, null_value])) |> concat(class())
+
+  list_value = many_surrounded_by(parsec(:value), open_square, close_square)
+
+  object_field = symbol() |> concat(colon) |> parsec(:value)
+
+  object_value = many_surrounded_by(object_field, open_bracket, close_bracket)
+
+  defcombinatorp(
+    :value,
     choice([
-      unicode_bom,
-      whitespace,
-      line_terminator,
-      comment,
-      comma,
-      ampersand,
-      punctuator,
-      block_string_value,
-      string_value,
-      float_value,
+      variable,
       int_value,
-      boolean_value_or_name_or_reserved_word
+      float_value,
+      string_value,
+      boolean_value,
+      null_value,
+      enum_value,
+      list_value,
+      object_value
+    ])
+  )
+
+  list_value_const = many_surrounded_by(parsec(:value_const), open_square, close_square)
+
+  object_field_const = symbol() |> concat(colon) |> parsec(:value_const)
+
+  object_value_const = many_surrounded_by(object_field_const, open_bracket, close_bracket)
+
+  defcombinatorp(
+    :value_const,
+    choice([
+      int_value,
+      float_value,
+      string_value,
+      boolean_value,
+      null_value,
+      enum_value,
+      list_value_const,
+      object_value_const
+    ])
+  )
+
+  argument = symbol() |> concat(colon) |> parsec(:value)
+
+  arguments = many_surrounded_by(argument, open_paren, close_paren)
+
+  directive = at |> concat(func()) |> optional(arguments)
+
+  directives = directive |> repeat(directive)
+
+  fragment_name = lookahead_not(keyword("on")) |> concat(name())
+
+  fragment_spread =
+    string("...") |> token(:punctuation) |> concat(fragment_name) |> optional(directives)
+
+  named_type = class()
+  list_type = many_surrounded_by(parsec(:type), open_square, close_square)
+
+  non_null_type =
+    choice([
+      named_type |> concat(exclamation),
+      list_type |> concat(exclamation)
     ])
 
-  @doc false
-  def __as_graphql_language__({ttype, meta, value}) do
-    {ttype, Map.put(meta, :language, :graphql), value}
-  end
-
-  defparsec(
-    :root_element,
-    root_element_combinator |> map({__MODULE__, :__as_graphql_language__, []})
+  defcombinatorp(
+    :type,
+    choice([
+      non_null_type,
+      named_type,
+      list_type
+    ])
   )
+
+  default_value = parsec(:value_const)
+
+  variable_definition =
+    variable |> concat(colon) |> concat(parsec(:type)) |> optional(default_value)
+
+  variable_definitions = many_surrounded_by(variable_definition, open_paren, close_paren)
+
+  selection_set = many_surrounded_by(parsec(:selection), open_bracket, close_bracket)
+
+  type_condition = keyword("on") |> concat(named_type)
+
+  fragment =
+    string("fragment")
+    |> concat(fragment_name)
+    |> concat(type_condition)
+    |> optional(directives)
+    |> concat(selection_set)
+
+  inline_fragment =
+    string("...")
+    |> token(:punctuation)
+    |> optional(type_condition)
+    |> optional(directives)
+    |> concat(selection_set)
+
+  field =
+    optional(alias_)
+    |> concat(name())
+    |> optional(arguments)
+    |> optional(directives)
+    |> optional(selection_set)
+
+  defcombinatorp(
+    :selection,
+    choice([
+      field,
+      fragment_spread,
+      inline_fragment
+    ])
+  )
+
+  operation =
+    choice([
+      operation_type
+      |> optional(func())
+      |> optional(variable_definitions)
+      |> optional(directives)
+      |> concat(selection_set),
+      selection_set
+    ])
+
+  executable = choice([operation, fragment])
+
+  definition = executable
+
+  # choice([
+  #   executable
+  #   type_system_definition,
+  #   type_system_extension
+  # ])
+
+  document = repeat(ignored()) |> concat(definition) |> repeat(definition)
 
   defparsec(
     :root,
-    repeat(parsec(:root_element))
+    document |> map(:as_graphql_language)
   )
 
+  defparsec(
+    :root_element,
+    parsec(:root) |> post_traverse(:head)
+  )
+
+  defp as_graphql_language({ttype, meta, value}) do
+    {ttype, Map.put(meta, :language, :graphql), value}
+  end
+
+  defp head(_rest, [head | _], context, _line, _offset) do
+    {[head], context}
+  end
+
   defp fill_mantissa(_rest, raw, context, _, _), do: {'0.' ++ raw, context}
-
-  @boolean_words ~w(
-      true
-      false
-    ) |> Enum.map(&String.to_charlist/1)
-
-  @reserved_words ~w(
-      directive
-      enum
-      extend
-      fragment
-      implements
-      input
-      interface
-      mutation
-      null
-      on
-      ON
-      query
-      repeatable
-      scalar
-      schema
-      subscription
-      type
-      union
-    ) |> Enum.map(&String.to_charlist/1)
-
-  defp boolean_value_or_name_or_reserved_word(rest, chars, context, loc, byte_offset) do
-    value = chars |> Enum.reverse()
-    do_boolean_value_or_name_or_reserved_word(rest, value, context, loc, byte_offset)
-  end
-
-  defp do_boolean_value_or_name_or_reserved_word(_rest, value, context, _loc, _byte_offset)
-       when value in @boolean_words do
-    {[{:name_constant, %{}, value}], context}
-  end
-
-  defp do_boolean_value_or_name_or_reserved_word(_rest, value, context, _loc, _byte_offset)
-       when value in @reserved_words do
-    {[{:keyword_reserved, %{}, value}], context}
-  end
-
-  defp do_boolean_value_or_name_or_reserved_word(_rest, value, context, _loc, _byte_offset) do
-    {[{:name, %{}, value}], context}
-  end
-
-  def line_and_column({line, line_offset}, byte_offset, column_correction) do
-    column = byte_offset - line_offset - column_correction + 1
-    {line, column}
-  end
-
-  defp not_line_terminator(<<?\n, _::binary>>, context, _, _), do: {:halt, context}
-  defp not_line_terminator(<<?\r, _::binary>>, context, _, _), do: {:halt, context}
-  defp not_line_terminator(_, context, _, _), do: {:cont, context}
 end

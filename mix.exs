@@ -5,7 +5,7 @@ defmodule MakeupGraphql.MixProject do
     [
       app: :makeup_graphql,
       description: "GraphQL lexer for the Makeup syntax highlighter.",
-      version: "0.1.2",
+      version: "0.1.3-dev",
       elixir: "~> 1.6",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
