@@ -11,7 +11,7 @@ Add `makeup_graphql` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:makeup_graphql, "~> 0.1.0"}
+    {:makeup_graphql, "~> 0.1.0", only: :dev}
   ]
 end
 ```
