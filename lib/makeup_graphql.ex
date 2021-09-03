@@ -47,18 +47,19 @@ defmodule MakeupGraphql do
     ]
   )
 
-  exclamation = ascii_char([?!]) |> ignore_whitespace(:punctuation)
-  dollar = ascii_char([?$]) |> ignore_whitespace(:punctuation)
-  open_paren = ascii_char([?(]) |> ignore_whitespace(:punctuation)
-  close_paren = ascii_char([?)]) |> ignore_whitespace(:punctuation)
-  colon = ascii_char([?:]) |> ignore_whitespace(:punctuation)
-  _equals = ascii_char([?=]) |> ignore_whitespace(:punctuation)
-  at = ascii_char([?@]) |> ignore_whitespace(:punctuation)
-  open_square = ascii_char([?[]) |> ignore_whitespace(:punctuation)
-  close_square = ascii_char([?]]) |> ignore_whitespace(:punctuation)
-  open_bracket = ascii_char([?{]) |> ignore_whitespace(:punctuation)
-  close_bracket = ascii_char([?}]) |> ignore_whitespace(:punctuation)
-  _pipe = ascii_char([?|]) |> ignore_whitespace(:punctuation)
+  # TODO: Ignore whitespace around these guys
+  exclamation = ascii_char([?!])
+  dollar = ascii_char([?$])
+  open_paren = ascii_char([?(])
+  close_paren = ascii_char([?)])
+  colon = ascii_char([?:])
+  _equals = ascii_char([?=])
+  at = ascii_char([?@])
+  open_square = ascii_char([?[])
+  close_square = ascii_char([?]])
+  open_bracket = ascii_char([?{])
+  close_bracket = ascii_char([?}])
+  _pipe = ascii_char([?|])
 
   negative_sign = ascii_char([?-])
 
@@ -73,7 +74,7 @@ defmodule MakeupGraphql do
       non_zero_digit |> repeat(digit)
     ])
 
-  int_value = ignore_whitespace(integer_part, :number_integer)
+  int_value = integer_part
 
   fractional_part =
     ascii_char([?.])
@@ -94,7 +95,6 @@ defmodule MakeupGraphql do
       integer_part |> post_traverse(:fill_mantissa) |> concat(exponent_part),
       integer_part |> concat(fractional_part)
     ])
-    |> ignore_whitespace(:number_float)
 
   unicode_char_in_string =
     string("\\u")
@@ -114,7 +114,7 @@ defmodule MakeupGraphql do
   single_string_value = string_like("\"", "\"", combinators_inside_string, :string)
   block_string_value = string_like(~S["""], ~S["""], combinators_inside_string, :string)
 
-  string_value = choice([single_string_value, block_string_value]) |> ignore_whitespace()
+  string_value = choice([single_string_value, block_string_value])
 
   operation_type = choice([keyword("query"), keyword("mutation"), keyword("subscription")])
   boolean_value = choice([constant("true"), constant("false")])
@@ -252,13 +252,88 @@ defmodule MakeupGraphql do
 
   executable = choice([operation, fragment])
 
-  definition = executable
+  root_operation_type_definition = operation_type |> concat(colon) |> concat(named_type)
 
-  # choice([
-  #   executable
-  #   type_system_definition,
-  #   type_system_extension
-  # ])
+  # TODO: Also const directives?
+  schema_definition =
+    keyword("schema")
+    |> optional(directives)
+    |> concat(open_bracket)
+    |> concat(root_operation_type_definition)
+    |> repeat(root_operation_type_definition)
+    |> concat(close_bracket)
+
+  description = string_value
+
+  implements_interfaces =
+    keyword("implements")
+    |> optional(ascii_char([?&]))
+    |> concat(named_type)
+    |> repeat(ascii_char([?&]) |> concat(named_type))
+
+  input_value_definition =
+    optional(description)
+    |> concat(class())
+    |> concat(colon)
+    |> parsec(:type)
+    |> optional(default_value)
+    |> optional(directives)
+
+  arguments_definition =
+    open_paren
+    |> concat(input_value_definition)
+    |> repeat(input_value_definition)
+    |> concat(close_paren)
+
+  # TODO: Also const directives?
+  field_definition =
+    optional(description)
+    |> concat(class())
+    |> optional(arguments_definition)
+    |> concat(colon)
+    |> parsec(:type)
+    |> optional(directives)
+
+  fields_definition =
+    open_bracket |> concat(field_definition) |> repeat(field_definition) |> concat(close_bracket)
+
+  # TODO: Also const directives?
+  scalar_type_definition =
+    optional(description) |> concat(keyword("scalar")) |> concat(class()) |> optional(directives)
+
+  object_type_definition =
+    optional(description)
+    |> concat(keyword("type"))
+    |> concat(class())
+    |> optional(implements_interfaces)
+    |> optional(directives)
+    |> optional(fields_definition)
+
+  type_definition =
+    choice([
+      scalar_type_definition,
+      object_type_definition
+      # interface_type_definition,
+      # union_type_definition,
+      # enum_type_definition,
+      # input_object_definition
+    ])
+
+  directive_definition = empty()
+
+  type_system_definition =
+    choice([
+      schema_definition,
+      type_definition,
+      directive_definition
+    ])
+
+  definition =
+    choice([
+      executable,
+      type_system_definition
+      # type_system_extension
+    ])
 
   document = repeat(ignored()) |> concat(definition) |> repeat(definition)
 
@@ -269,15 +344,11 @@ defmodule MakeupGraphql do
 
   defparsec(
     :root_element,
-    parsec(:root) |> post_traverse(:head)
+    string("TODO")
   )
 
   defp as_graphql_language({ttype, meta, value}) do
     {ttype, Map.put(meta, :language, :graphql), value}
-  end
-
-  defp head(_rest, [head | _], context, _line, _offset) do
-    {[head], context}
   end
 
   defp fill_mantissa(_rest, raw, context, _, _), do: {'0.' ++ raw, context}
